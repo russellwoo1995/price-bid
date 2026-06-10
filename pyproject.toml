@@ -2,7 +2,7 @@
 name = "bid-scraper"
 version = "0.1.0"
 description = "苏州政府采购招标信息爬虫"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "requests>=2.32.3",
     "beautifulsoup4>=4.13.5",

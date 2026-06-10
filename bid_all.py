@@ -64,19 +64,17 @@ def fetch_suzhou_gov_bids():
     elif results:
         write_to_excel(results,"suzhou_gov_bids")
 
-# done 爬不到东西了，要改
 def fetch_jiangsu_gov_bids():
-    url = "https://api.jszbtb.com/DataGatewayApi/PublishBulletins?bulletinType=1&industryCode=&regionCode=320500&startTime="+ TODAY + "+00:00:00&endTime=" + TODAY +"+23:59:59&keyword=&currentPage=1&pageSize=20"
+    url = "https://api.jszbtb.com/DataGatewayApi/PublishBulletins"
+    start_time = TODAY + " 00:00:00"
+    end_time = TODAY + " 23:59:59"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Host":"api.jszbtb.com",
-        "Cookie":"Hm_lvt_f5b9bdde19559e7d521049ec442e5faf=1762414353,1763100732,1763521207,1764213894",
+        "Referer": "https://www.jszbtb.com/",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-CN,zh;q=0.9",
     }
-    start_time = TODAY + "+00:00:00"
-    end_time = TODAY + "+23:59:59"
-    # today = "2025-06-30"
-    params  = {
+    params = {
         "bulletinType": 1,
         "industryCode": "",
         "regionCode": 320500,
@@ -87,15 +85,33 @@ def fetch_jiangsu_gov_bids():
         "pageSize": 20
     }
 
-    response = requests.get(url, headers=headers, params=params, timeout=15)
-    response.raise_for_status()
+    # 重试机制：最多尝试 2 次
+    response = None
+    for attempt in range(2):
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=15)
+            response.raise_for_status()
+            break
+        except requests.HTTPError as e:
+            if attempt == 1:
+                print(f"⚠️  江苏省招投标 失败：{e}")
+                return
+            print(f"⚠️  江苏省招投标第 {attempt+1} 次尝试失败（{e}），3 秒后重试...")
+            time.sleep(3)
+        except requests.RequestException as e:
+            print(f"⚠️  江苏省招投标 网络错误：{e}")
+            return
 
-    if not response.text.strip().startswith("{"):
+    if response is None or not response.text.strip().startswith("{"):
         print(f"⚠️  江苏省招投标接口返回非 JSON（可能被封锁），跳过。")
         return
 
     data = response.json()
-    rows = data.get("data", {}).get("data", [])
+    outer_data = data.get("data")
+    if outer_data is None or not isinstance(outer_data, dict):
+        print(f"⚠️  江苏省招投标接口返回错误：{data.get('errorMessage', '未知错误')}，跳过。")
+        return
+    rows = outer_data.get("data", [])
 
     print(f"【{TODAY} 江苏省招标信息】")
     found = False
@@ -140,32 +156,55 @@ def fetch_jiangsu_gov_bids():
 # URL搜到，不返回信息，需要换一个方法
 def fetch_xiane_gov_bids():
     url = 'https://www.wzqzjj-wfw.cn:8090/page/Project/ProZhaoBiaogsMX.aspx?lx=1'
-    # url = "https://api.jszbtb.com/DataGatewayApi/PublishBulletins?bulletinType=1&industryCode=&regionCode=320500&startTime=2025-12-03+00:00:00&endTime=2025-12-03+23:59:59&keyword=&currentPage=1&pageSize=20"
     headers = {
-        'User-Agent': 'Mozilla/5.0'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
     }
 
-    response = requests.get(url, headers=headers, timeout=15)
-    response.encoding = 'utf-8'
-    soup = BeautifulSoup(response.text, 'html.parser')
+    response = None
+    # 先用 requests 尝试，超时设为 20 秒，最多重试 2 次
+    for attempt in range(2):
+        try:
+            response = requests.get(url, headers=headers, timeout=20)
+            response.encoding = 'utf-8'
+            break
+        except requests.Timeout:
+            if attempt == 1:
+                print("⚠️  限额平台 requests 请求超时（已重试），尝试使用浏览器...")
+            else:
+                print(f"⚠️  限额平台第 {attempt+1} 次请求超时，3 秒后重试...")
+                time.sleep(3)
+        except requests.ConnectionError as e:
+            print(f"⚠️  限额平台连接失败：{e}，尝试使用浏览器...")
+            break
+
+    # 如果 requests 失败（超时或连接错误），用 Playwright 回退
+    if response is None:
+        try:
+            with sync_playwright() as play:
+                browser = play.chromium.launch()
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                    ignore_https_errors=True,
+                )
+                page = context.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                time.sleep(random.random() * 2)
+                page_html = page.content()
+                browser.close()
+                response = type('DummyResponse', (), {
+                    'text': page_html,
+                    'encoding': 'utf-8',
+                })()
+        except Exception as e:
+            print(f"⚠️  限额平台浏览器回退也失败：{e}")
+            return
 
     # 检测 Zscaler/企业网关拦截页
     if "Sorry, company polic" in response.text or "Network app" in response.text:
         print("⚠️  限额平台被网络网关拦截，跳过。")
         return
 
-    # with sync_playwright() as play:
-    #     broswer = play.chromium.launch()
-    #     context = broswer.new_context()
-    #     page = context.new_page()
-    #     page.goto(url)
-    #     page.wait_for_load_state("load")
-    #     time.sleep(random.random()*2)
-
-    #     pageHtml = page.query_selector("*").inner_html()
-    #     broswer.close()
-    # soup = BeautifulSoup(pageHtml, 'html.parser')
-#
+    soup = BeautifulSoup(response.text, 'html.parser')
     print(f"【{TODAY} 吴中区招标信息】")
     found = False
     results = []
@@ -264,64 +303,77 @@ def fetch_suzhou_gonggong_gov_bids():
 
 
 def fetch_suzhou_yangguang_bids():
-    # 该站经 zscloud 企业网关做 SAML SSO，必须带登录 cookie 才能访问
-    # 首次运行前请先执行 save_cookies.py 保存 cookie
-    page_url = 'https://zc.szaee.com/#/project?tradeType=4&projectClass='
-    cookie_file = os.path.join(os.path.dirname(__file__), "cookies_yangguang.json")
+    """苏州农村阳光招采平台 — 公开 API，无需登录"""
+    url = "https://zc.szaee.com/api/public/projectAnn"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Content-Type": "application/json",
+        "Referer": "https://zc.szaee.com/",
+    }
 
-    if not os.path.exists(cookie_file):
-        print("⚠️  阳光采购：未找到 cookies_yangguang.json，请先运行 save_cookies.py 登录并保存 cookie。")
-        return
+    all_items = []
+    page = 1
+    page_size = 50
 
-    with open(cookie_file, encoding="utf-8") as f:
-        saved_cookies = json.load(f)
+    # 分页拉取，直到没有今天的公告为止
+    while True:
+        payload = {
+            "page": page,
+            "pageSize": page_size,
+            "tradeType": 4,        # 4=公开招标
+            "projectClass": None,   # 全部类型
+            "districtCode": "",
+            "keyword": ""
+        }
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=20)
+            response.raise_for_status()
+        except Exception as e:
+            print(f"⚠️  阳光采购 失败：{e}")
+            return
+
+        data = response.json()
+        items = data.get("result", {}).get("items", [])
+        if not items:
+            break
+
+        # 只保留今天的
+        today_items = [it for it in items if it.get("publishTime", "") == TODAY]
+        all_items.extend(today_items)
+
+        # 如果当前页最后一条发布日期 < TODAY，说明今天的已全部拉完
+        last_date = items[-1].get("publishTime", "")
+        if last_date < TODAY:
+            break
+
+        total_pages = data.get("result", {}).get("totalPages", 1)
+        if page >= total_pages:
+            break
+        page += 1
 
     print(f"【{TODAY} 苏州阳光采购招标信息】")
     found = False
     results = []
-    captured = []
 
-    def handle_response(response):
-        if 'projectAnn' in response.url:
-            try:
-                captured.append(response.json())
-            except Exception:
-                pass
+    for row in all_items:
+        title = row.get("announceName", "")
+        project_id = row.get("projectId", "")
+        area = row.get("areaName", "")
+        release_time = row.get("publishTime", "")
+        link = f"https://zc.szaee.com/#/projectDetail?id={project_id}"
 
-    with sync_playwright() as play:
-        browser = play.chromium.launch()
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            ignore_https_errors=True,
-        )
-        context.add_cookies(saved_cookies)
-        page = context.new_page()
-        page.on("response", handle_response)
-        page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(5)
-        browser.close()
-
-    for data in captured:
-        rows = (data.get("data") or {}).get("list") or data.get("rows") or []
-        if not rows:
-            print(f"[debug] 阳光采购原始响应：{str(data)[:300]}")
+        # 只关注吴中区和苏州市
+        if "吴中区" not in area and "苏州市" not in area:
             continue
-        for row in rows:
-            release_time = (row.get("releaseTime") or row.get("RELEASE_TIME") or row.get("publishTime") or "")[:10]
-            if release_time != TODAY:
-                continue
-            title = row.get("projectName") or row.get("TITLE") or row.get("name") or ""
-            project_id = row.get("annId") or row.get("id") or row.get("PROJECTID") or ""
-            area = row.get("districtName") or row.get("AREA") or row.get("district") or ""
-            link = f"https://zc.szaee.com/#/projectDetail?id={project_id}"
-            print(f"[{area}]{title}\n{link}\n")
-            found = True
-            results.append({
-                "地区": area,
-                "标题": title,
-                "发布日期": release_time,
-                "链接": link
-            })
+
+        print(f"[{area}]{title}\n{link}\n")
+        found = True
+        results.append({
+            "地区": area,
+            "标题": title,
+            "发布日期": release_time,
+            "链接": link
+        })
 
     if not found:
         print("今日暂无招标。")

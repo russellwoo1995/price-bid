@@ -112,10 +112,16 @@ def run_daily() -> None:
     })
 
     sep = "=" * 60
-    print(f"\n{sep}\n  招标日报 · {today}\n{sep}")
-    print(result["output"])
-    print(f"{sep}\n")
-    logger.info("✅  完成")
+    report = f"{sep}\n  招标日报 · {today}\n{sep}\n{result['output']}\n{sep}\n"
+    print(f"\n{report}")
+
+    # 保存为 Markdown 文件
+    md_filename = f"招标日报_{today}.md"
+    with open(md_filename, "w", encoding="utf-8") as f:
+        f.write(f"# 招标日报 · {today}\n\n")
+        f.write(result["output"])
+        f.write("\n")
+    logger.info("✅  完成，报告已保存到 %s", md_filename)
 
 
 def main() -> None:

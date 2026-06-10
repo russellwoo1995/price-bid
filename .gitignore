@@ -1,5 +1,5 @@
 .env
 *.xlsx
-cookies_yangguang.json
 __pycache__/
 .venv/
+招标日报_*.md
