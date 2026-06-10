@@ -1,0 +1,18 @@
+[project]
+name = "bid-scraper"
+version = "0.1.0"
+description = "苏州政府采购招标信息爬虫"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.32.3",
+    "beautifulsoup4>=4.13.5",
+    "pandas>=2.3.0",
+    "openpyxl>=3.1",
+    "playwright>=1.40",
+    "lxml>=5.0",
+    "langchain>=0.3,<1.0",
+    "langchain-openai>=0.2,<1.0",
+    "langchain-core>=0.3,<1.0",
+    "apscheduler>=3.10",
+    "python-dotenv>=1.0",
+]

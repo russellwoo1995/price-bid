@@ -1,0 +1,5 @@
+.env
+*.xlsx
+cookies_yangguang.json
+__pycache__/
+.venv/
