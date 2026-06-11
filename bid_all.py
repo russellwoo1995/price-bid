@@ -15,6 +15,9 @@ _TZ_BEIJING = zoneinfo.ZoneInfo("Asia/Shanghai")
 TODAY = datetime.now(_TZ_BEIJING).strftime("%Y-%m-%d")
 true_categories = ["003001","003002","003003","003034"]
 
+# 控制是否自动保存 Excel，Web 界面可设为 False 先预览再手动保存
+AUTO_SAVE = True
+
 def fetch_suzhou_gov_bids():
     url = "https://czju.suzhou.gov.cn/zfcg/content/searchContents.action"
     headers = {
@@ -62,7 +65,9 @@ def fetch_suzhou_gov_bids():
     if not found:
         print("今日暂无招标。")
     elif results:
-        write_to_excel(results,"suzhou_gov_bids")
+        if AUTO_SAVE:
+            write_to_excel(results,"suzhou_gov_bids")
+    return results
 
 def fetch_jiangsu_gov_bids():
     url = "https://api.jszbtb.com/DataGatewayApi/PublishBulletins"
@@ -95,22 +100,22 @@ def fetch_jiangsu_gov_bids():
         except requests.HTTPError as e:
             if attempt == 1:
                 print(f"⚠️  江苏省招投标 失败：{e}")
-                return
+                return []
             print(f"⚠️  江苏省招投标第 {attempt+1} 次尝试失败（{e}），3 秒后重试...")
             time.sleep(3)
         except requests.RequestException as e:
             print(f"⚠️  江苏省招投标 网络错误：{e}")
-            return
+            return []
 
     if response is None or not response.text.strip().startswith("{"):
         print(f"⚠️  江苏省招投标接口返回非 JSON（可能被封锁），跳过。")
-        return
+        return []
 
     data = response.json()
     outer_data = data.get("data")
     if outer_data is None or not isinstance(outer_data, dict):
         print(f"⚠️  江苏省招投标接口返回错误：{data.get('errorMessage', '未知错误')}，跳过。")
-        return
+        return []
     rows = outer_data.get("data", [])
 
     print(f"【{TODAY} 江苏省招标信息】")
@@ -151,7 +156,9 @@ def fetch_jiangsu_gov_bids():
     if not found:
         print("今日暂无招标。")
     elif results:
-        write_to_excel(results,"jiangsu_gov_bids")
+        if AUTO_SAVE:
+            write_to_excel(results,"jiangsu_gov_bids")
+    return results
 
 # URL搜到，不返回信息，需要换一个方法
 def fetch_xiane_gov_bids():
@@ -197,12 +204,12 @@ def fetch_xiane_gov_bids():
                 })()
         except Exception as e:
             print(f"⚠️  限额平台浏览器回退也失败：{e}")
-            return
+            return []
 
     # 检测 Zscaler/企业网关拦截页
     if "Sorry, company polic" in response.text or "Network app" in response.text:
         print("⚠️  限额平台被网络网关拦截，跳过。")
-        return
+        return []
 
     soup = BeautifulSoup(response.text, 'html.parser')
     print(f"【{TODAY} 吴中区招标信息】")
@@ -242,7 +249,9 @@ def fetch_xiane_gov_bids():
     if not found:
         print("今天暂无新公告。")
     elif results:
-        write_to_excel(results,"xiane_wuzhong_bids")
+        if AUTO_SAVE:
+            write_to_excel(results,"xiane_wuzhong_bids")
+    return results
 
 
 
@@ -299,7 +308,9 @@ def fetch_suzhou_gonggong_gov_bids():
     if not found:
         print("今日暂无招标。")
     elif results:
-        write_to_excel(results, "suzhou_gonggong_gov_bids")
+        if AUTO_SAVE:
+            write_to_excel(results, "suzhou_gonggong_gov_bids")
+    return results
 
 
 def fetch_suzhou_yangguang_bids():
@@ -330,7 +341,7 @@ def fetch_suzhou_yangguang_bids():
             response.raise_for_status()
         except Exception as e:
             print(f"⚠️  阳光采购 失败：{e}")
-            return
+            return []
 
         data = response.json()
         items = data.get("result", {}).get("items", [])
@@ -378,7 +389,9 @@ def fetch_suzhou_yangguang_bids():
     if not found:
         print("今日暂无招标。")
     elif results:
-        write_to_excel(results, "yangguang_bids")
+        if AUTO_SAVE:
+            write_to_excel(results,"yangguang_bids")
+    return results
 
 
 
@@ -442,7 +455,9 @@ def fetch_suzhou_gov_yixiang():
     if not found:
         print("今日暂无意向。")
     elif results:
-        write_to_excel(results,"suzhou_gov_yixiang")
+        if AUTO_SAVE:
+            write_to_excel(results,"suzhou_gov_yixiang")
+    return results
 
 def fetch_suzhou_city_college():
     url = "https://www.szcu.edu.cn/zbxx/list.htm"
@@ -462,7 +477,7 @@ def fetch_suzhou_city_college():
     news = re.findall('<li class="news n\d+? clearfix">(.+?)</li>', response.text)
     if len(news) == 0:
         print("未找到项目")
-        return
+        return []
     for t in news:
         area = "吴中区"
         project_name = re.findall("title=\\\'(.+?)\'", t)[0]
@@ -484,7 +499,9 @@ def fetch_suzhou_city_college():
     if not found:
         print("今天暂无新公告。")
     elif results:
-        write_to_excel(results,"city_college_bids")
+        if AUTO_SAVE:
+            write_to_excel(results,"city_college_bids")
+    return results
 
 
 def fetch_suzhou_carrer_university():
@@ -505,7 +522,7 @@ def fetch_suzhou_carrer_university():
     news = re.findall('<li>(.+?)</li>', re.findall("            <ul>(.+?)</ul>",response.text, re.S)[0], re.S)
     if len(news) == 0:
         print("未找到项目")
-        return
+        return []
     for t in news:
         area = "吴中区"
         project_name = re.findall('title="(.+?)"', t)[0]
@@ -527,7 +544,9 @@ def fetch_suzhou_carrer_university():
     if not found:
         print("今天暂无新公告。")
     elif results:
-        write_to_excel(results,"carrer_university_bids")
+        if AUTO_SAVE:
+            write_to_excel(results,"carrer_university_bids")
+    return results
 
 
 
@@ -569,7 +588,9 @@ def fetch_suzhou_industry_university():
     if not found:
         print("今天暂无新公告。")
     elif results:
-        write_to_excel(results,"industry_university_bids")
+        if AUTO_SAVE:
+            write_to_excel(results,"industry_university_bids")
+    return results
 
 
 # def run_all_fetchers():
