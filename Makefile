@@ -2,7 +2,7 @@
 
 install:
 	uv sync
-	uv run playwright install chromium
+	uv run python -m playwright install chromium
 
 run:
 	uv run python bid_all.py

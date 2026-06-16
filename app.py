@@ -170,6 +170,7 @@ _defaults = {
     "coll_logs": {},
     "coll_date": "",
     "llm_summary": "",
+    "_last_collect_ts": 0.0,
 }
 for k, v in _defaults.items():
     st.session_state.setdefault(k, v)
@@ -210,41 +211,54 @@ if page == "一键采集":
 
     # ── 开始采集 ─────────────────────────────────
     if st.button("🔍 开始采集", type="primary", width='stretch'):
-        bid_all.TODAY = date_str
-        bid_all.AUTO_SAVE = True
-        all_results = {}
-        all_logs = {}
+        import time as _time
+        now_ts = _time.time()
+        cooldown_secs = 300  # 5 分钟冷却期，防止触发反爬
+        elapsed = now_ts - st.session_state._last_collect_ts
 
-        progress = st.progress(0, text="准备采集...")
+        if elapsed < cooldown_secs and st.session_state._last_collect_ts > 0:
+            remaining = int(cooldown_secs - elapsed)
+            st.warning(
+                f"⏳ 采集冷却中，请等待 **{remaining // 60} 分 {remaining % 60} 秒** 后再试。"
+                f"（冷却期 {cooldown_secs // 60} 分钟，防止触发反爬机制）"
+            )
+        else:
+            st.session_state._last_collect_ts = now_ts
+            bid_all.TODAY = date_str
+            bid_all.AUTO_SAVE = True
+            all_results = {}
+            all_logs = {}
 
-        for i, (fn, name) in enumerate(CRAWLERS):
-            with st.status(f"📡 {name}", expanded=True) as status:
-                results, log_text = _capture(fn)
-                all_results[name] = results
-                all_logs[name] = log_text
+            progress = st.progress(0, text="准备采集...")
 
-                n = len(results)
-                if n > 0:
-                    status.update(label=f"✅ {name} — {n} 条", state="complete", expanded=False)
-                else:
-                    status.update(label=f"⚪ {name} — 无数据", state="complete", expanded=False)
+            for i, (fn, name) in enumerate(CRAWLERS):
+                with st.status(f"📡 {name}", expanded=True) as status:
+                    results, log_text = _capture(fn)
+                    all_results[name] = results
+                    all_logs[name] = log_text
 
-                if log_text:
-                    st.code(log_text, language=None)
+                    n = len(results)
+                    if n > 0:
+                        status.update(label=f"✅ {name} — {n} 条", state="complete", expanded=False)
+                    else:
+                        status.update(label=f"⚪ {name} — 无数据", state="complete", expanded=False)
 
-            progress.progress((i + 1) / len(CRAWLERS), text=f"已完成 {i+1}/{len(CRAWLERS)}")
+                    if log_text:
+                        st.code(log_text, language=None)
 
-        progress.empty()
-        st.session_state.coll_results = all_results
-        st.session_state.coll_logs = all_logs
-        st.session_state.coll_date = date_str
+                progress.progress((i + 1) / len(CRAWLERS), text=f"已完成 {i+1}/{len(CRAWLERS)}")
 
-        total = sum(len(r) for r in all_results.values())
-        st.success(f"采集完成！共获取 **{total}** 条招标信息")
+            progress.empty()
+            st.session_state.coll_results = all_results
+            st.session_state.coll_logs = all_logs
+            st.session_state.coll_date = date_str
 
-        # 自动生成 AI 报告
-        if auto_llm and total > 0:
-            _generate_llm_summary(date_str, all_results)
+            total = sum(len(r) for r in all_results.values())
+            st.success(f"采集完成！共获取 **{total}** 条招标信息")
+
+            # 自动生成 AI 报告
+            if auto_llm and total > 0:
+                _generate_llm_summary(date_str, all_results)
 
     # ── 展示采集结果 ─────────────────────────────
     if st.session_state.coll_results:
@@ -373,17 +387,23 @@ elif page == "定时任务":
 
     with col2:
         if st.button("▶️ 测试执行一次"):
-            with st.spinner("正在执行一次采集..."):
-                bid_all.TODAY = _now()
-                bid_all.AUTO_SAVE = True
-                total = 0
-                for fn, name in CRAWLERS:
-                    try:
-                        r, _ = _capture(fn)
-                        total += len(r)
-                    except Exception:
-                        pass
-                st.success(f"执行完成，共获取 {total} 条信息")
+            import time as _time
+            now_ts = _time.time()
+            if now_ts - st.session_state._last_collect_ts < 300:
+                st.warning("⏳ 采集冷却中，请稍后再试（防止触发反爬机制）")
+            else:
+                st.session_state._last_collect_ts = now_ts
+                with st.spinner("正在执行一次采集..."):
+                    bid_all.TODAY = _now()
+                    bid_all.AUTO_SAVE = True
+                    total = 0
+                    for fn, name in CRAWLERS:
+                        try:
+                            r, _ = _capture(fn)
+                            total += len(r)
+                        except Exception:
+                            pass
+                    st.success(f"执行完成，共获取 {total} 条信息")
 
     st.divider()
     st.subheader("部署方式")

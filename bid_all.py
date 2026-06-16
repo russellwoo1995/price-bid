@@ -8,8 +8,60 @@ import time
 import re
 import random
 import zoneinfo
+import functools
 
 from playwright.sync_api import sync_playwright
+
+# ── 反爬防护基础设施 ──────────────────────────────────────────────
+
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+]
+
+
+def _create_session():
+    """创建带浏览器级 headers 的 requests.Session，复用 TCP 连接"""
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    })
+    return sess
+
+
+def _backoff_sleep(attempt, base=1.0, max_sleep=60.0):
+    """指数退避 + 随机 jitter，attempt 从 0 开始"""
+    delay = min(base * (2 ** attempt), max_sleep)
+    jitter = random.uniform(0, delay * 0.5)
+    time.sleep(delay + jitter)
+
+
+_DAILY_CACHE = {}  # key: "函数名_YYYY-MM-DD" → 结果列表
+
+
+def with_safeguards(func):
+    """装饰器：每日缓存 + 随机前置延迟，避免重复请求"""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        cache_key = f"{func.__name__}_{TODAY}"
+        if cache_key in _DAILY_CACHE:
+            print(f"[缓存] {func.__name__} 今日已采集，跳过 HTTP 请求")
+            return _DAILY_CACHE[cache_key]
+        time.sleep(random.uniform(0.5, 2.5))
+        results = func(*args, **kwargs)
+        _DAILY_CACHE[cache_key] = results
+        return results
+    return wrapper
+
 
 _TZ_BEIJING = zoneinfo.ZoneInfo("Asia/Shanghai")
 TODAY = datetime.now(_TZ_BEIJING).strftime("%Y-%m-%d")
@@ -18,12 +70,13 @@ true_categories = ["003001","003002","003003","003034"]
 # 控制是否自动保存 Excel，Web 界面可设为 False 先预览再手动保存
 AUTO_SAVE = True
 
+@with_safeguards
 def fetch_suzhou_gov_bids():
     url = "https://czju.suzhou.gov.cn/zfcg/content/searchContents.action"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
+    session = _create_session()
+    session.headers.update({
         "Content-Type": "application/x-www-form-urlencoded",
-    }
+    })
 
     payload = {
         "title": "",
@@ -35,7 +88,7 @@ def fetch_suzhou_gov_bids():
         "rows": 100
     }
 
-    response = requests.post(url, headers=headers, data=payload)
+    response = session.post(url, data=payload, timeout=20)
     response.raise_for_status()
 
     data = response.json()
@@ -69,16 +122,17 @@ def fetch_suzhou_gov_bids():
             write_to_excel(results,"suzhou_gov_bids")
     return results
 
+@with_safeguards
 def fetch_jiangsu_gov_bids():
     url = "https://api.jszbtb.com/DataGatewayApi/PublishBulletins"
     start_time = TODAY + " 00:00:00"
     end_time = TODAY + " 23:59:59"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0",
+    session = _create_session()
+    session.headers.update({
         "Referer": "https://www.jszbtb.com/",
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "zh-CN,zh;q=0.9",
-    }
+    })
     params = {
         "bulletinType": 1,
         "industryCode": "",
@@ -94,15 +148,15 @@ def fetch_jiangsu_gov_bids():
     response = None
     for attempt in range(2):
         try:
-            response = requests.get(url, headers=headers, params=params, timeout=15)
+            response = session.get(url, params=params, timeout=20)
             response.raise_for_status()
             break
         except requests.HTTPError as e:
             if attempt == 1:
                 print(f"⚠️  江苏省招投标 失败：{e}")
                 return []
-            print(f"⚠️  江苏省招投标第 {attempt+1} 次尝试失败（{e}），3 秒后重试...")
-            time.sleep(3)
+            print(f"⚠️  江苏省招投标第 {attempt+1} 次尝试失败（{e}），重试...")
+            _backoff_sleep(attempt, base=1.5)
         except requests.RequestException as e:
             print(f"⚠️  江苏省招投标 网络错误：{e}")
             return []
@@ -161,25 +215,24 @@ def fetch_jiangsu_gov_bids():
     return results
 
 # URL搜到，不返回信息，需要换一个方法
+@with_safeguards
 def fetch_xiane_gov_bids():
-    url = 'https://www.wzqzjj-wfw.cn:8090/page/Project/ProZhaoBiaogsMX.aspx?lx=1'
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
-    }
+    url = 'http://www.wzqzjj-wfw.cn:8090/page/Project/ProZhaoBiaogsMX.aspx?lx=1'
+    session = _create_session()
 
     response = None
     # 先用 requests 尝试，超时设为 20 秒，最多重试 2 次
     for attempt in range(2):
         try:
-            response = requests.get(url, headers=headers, timeout=20)
+            response = session.get(url, timeout=20)
             response.encoding = 'utf-8'
             break
         except requests.Timeout:
             if attempt == 1:
                 print("⚠️  限额平台 requests 请求超时（已重试），尝试使用浏览器...")
             else:
-                print(f"⚠️  限额平台第 {attempt+1} 次请求超时，3 秒后重试...")
-                time.sleep(3)
+                print(f"⚠️  限额平台第 {attempt+1} 次请求超时，重试...")
+                _backoff_sleep(attempt, base=1.5)
         except requests.ConnectionError as e:
             print(f"⚠️  限额平台连接失败：{e}，尝试使用浏览器...")
             break
@@ -232,7 +285,7 @@ def fetch_xiane_gov_bids():
         if link_tag:
             href = link_tag.get("href", "").strip()
             if not href.startswith("http"):
-                link = "https://www.wzqzjj-wfw.cn:8090/page/" + href.replace("../", "")
+                link = "http://www.wzqzjj-wfw.cn:8090/page/" + href.replace("../", "")
 
 
         print(f"[{area}]{project_name}\n{link}\n")
@@ -255,11 +308,11 @@ def fetch_xiane_gov_bids():
 
 
 
+@with_safeguards
 def fetch_suzhou_gonggong_gov_bids():
-    url = "http://218.4.45.172:8086/EpointWebBuilder/JyxxSearchAction.action"
-    headers = {
-        'User-Agent': 'Mozilla/5.0'
-    }
+    url = "https://ggzy.suzhou.gov.cn/EpointWebBuilder/JyxxSearchAction.action"
+    session = _create_session()
+    session.headers.update({"Referer": "https://ggzy.suzhou.gov.cn/"})
 
     params = {
         "cmd": "getList1",
@@ -275,8 +328,30 @@ def fetch_suzhou_gonggong_gov_bids():
         "pageSize": 500
     }
 
-    response = requests.get(url, headers=headers, params=params, timeout=15)
-    response.raise_for_status()
+    # 3 次重试 + 指数退避，429 限流使用更长退避
+    response = None
+    for attempt in range(3):
+        try:
+            response = session.get(url, params=params, timeout=20)
+            response.raise_for_status()
+            break
+        except requests.HTTPError as e:
+            if response is not None and response.status_code == 429:
+                print(f"[限流] ggzy.suzhou.gov.cn 返回 429，等待后重试...")
+                _backoff_sleep(attempt, base=3.0)
+            elif attempt == 2:
+                print(f"公共资源交易 失败：{e}")
+                return []
+            else:
+                print(f"公共资源交易第 {attempt+1} 次失败（{e}），重试...")
+                _backoff_sleep(attempt, base=2.0)
+        except requests.RequestException as e:
+            if attempt == 2:
+                print(f"公共资源交易 网络错误：{e}")
+                return []
+            _backoff_sleep(attempt, base=2.0)
+    if response is None:
+        return []
     data = response.json()
     rows = json.loads(data.get("custom", [])).get("Table", [])
     #print(rows)
@@ -292,7 +367,7 @@ def fetch_suzhou_gonggong_gov_bids():
         # tomorrow_time = datetime.strptime(release_time, r'%Y-%m-%d') + timedelta(days=1)
         category_num = row["categorynum"]
         category_total = category_num[:6]
-        link = f"http://218.4.45.172:8086/jyxx/{category_total}/{category_num}/{release_time.replace('-','')}/{project_id}.html"
+        link = f"http://ggzy.suzhou.gov.cn/jyxx/{category_total}/{category_num}/{release_time.replace('-','')}/{project_id}.html"
         if category_total in true_categories and (area == "吴中区" or area == "苏州市区" or area == "太湖度假区"):
             industry_name = row["jyfl"]
             print(f"[{area}]{title}\n{link}\n")
@@ -313,14 +388,15 @@ def fetch_suzhou_gonggong_gov_bids():
     return results
 
 
+@with_safeguards
 def fetch_suzhou_yangguang_bids():
     """苏州农村阳光招采平台 — 公开 API，无需登录"""
     url = "https://zc.szaee.com/api/public/projectAnn"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    session = _create_session()
+    session.headers.update({
         "Content-Type": "application/json",
         "Referer": "https://zc.szaee.com/",
-    }
+    })
 
     all_items = []
     page = 1
@@ -336,12 +412,17 @@ def fetch_suzhou_yangguang_bids():
             "districtCode": "",
             "keyword": ""
         }
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=20)
-            response.raise_for_status()
-        except Exception as e:
-            print(f"⚠️  阳光采购 失败：{e}")
-            return []
+        # 单页请求 + 重试
+        for attempt in range(2):
+            try:
+                response = session.post(url, json=payload, timeout=20)
+                response.raise_for_status()
+                break
+            except Exception as e:
+                if attempt == 1:
+                    print(f"⚠️  阳光采购第{page}页失败：{e}")
+                    return []
+                _backoff_sleep(attempt, base=1.0)
 
         data = response.json()
         items = data.get("result", {}).get("items", [])
@@ -361,6 +442,7 @@ def fetch_suzhou_yangguang_bids():
         if page >= total_pages:
             break
         page += 1
+        time.sleep(random.uniform(0.3, 1.0))  # 翻页间隔 jitter，避免触发限流
 
     print(f"【{TODAY} 苏州阳光采购招标信息】")
     found = False
@@ -371,7 +453,7 @@ def fetch_suzhou_yangguang_bids():
         project_id = row.get("projectId", "")
         area = row.get("areaName", "")
         release_time = row.get("publishTime", "")
-        link = f"https://zc.szaee.com/#/projectDetail?id={project_id}"
+        link = f"https://czju.suzhou.gov.cn/zfcg/html/project/{project_id}.shtml"
 
         # 只关注吴中区和苏州市
         if "吴中区" not in area and "苏州市" not in area:
@@ -408,12 +490,13 @@ def write_to_excel(results, sheet_name):
             df.to_excel(writer, sheet_name=sheet_name, index=False)
     print(f"✅ 已保存到文件『{filename}』的 {sheet_name} 中")
 
+@with_safeguards
 def fetch_suzhou_gov_yixiang():
     url = "https://czju.suzhou.gov.cn/zfcg/content/queryContentForCgyx.action"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
+    session = _create_session()
+    session.headers.update({
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    }
+    })
     payload = {
         "channelId": 138,
         "page": 1,
@@ -425,7 +508,7 @@ def fetch_suzhou_gov_yixiang():
         "publishEndTime": ""
     }
 
-    response = requests.post(url, headers=headers, data=payload)
+    response = session.post(url, data=payload, timeout=20)
     response.raise_for_status()
 
     data = response.json()
@@ -459,13 +542,11 @@ def fetch_suzhou_gov_yixiang():
             write_to_excel(results,"suzhou_gov_yixiang")
     return results
 
+@with_safeguards
 def fetch_suzhou_city_college():
     url = "https://www.szcu.edu.cn/zbxx/list.htm"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    }
-    response = requests.get(url, headers=headers)
+    session = _create_session()
+    response = session.get(url, timeout=20)
     response.encoding = 'utf-8'
     
     print(f"【{TODAY} 苏州城市学院招标信息】")
@@ -504,13 +585,11 @@ def fetch_suzhou_city_college():
     return results
 
 
+@with_safeguards
 def fetch_suzhou_carrer_university():
     url = "https://www.jssvc.edu.cn/zfcg/"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    }
-    response = requests.get(url, headers=headers)
+    session = _create_session()
+    response = session.get(url, timeout=20)
     response.encoding = 'utf-8'
     
     print(f"【{TODAY} 苏州职业技术大学招标信息】")
@@ -550,6 +629,7 @@ def fetch_suzhou_carrer_university():
 
 
 
+@with_safeguards
 def fetch_suzhou_industry_university():
     url = "https://hqzcc.siit.edu.cn/zbxx/list.htm"
     # 该站日期列由 JS 动态渲染，需用浏览器；用 page.content() 避免上下文销毁问题
@@ -557,7 +637,7 @@ def fetch_suzhou_industry_university():
         browser = play.chromium.launch()
         context = browser.new_context(ignore_https_errors=True)
         page = context.new_page()
-        page.goto(url)
+        page.goto(url, timeout=30000)
         page.wait_for_load_state("networkidle", timeout=20000)
         time.sleep(random.random() * 2)
         pageHtml = page.content()
